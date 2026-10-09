@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Campus Event Bot</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>🎓 Campus Event Bot</h1>
+    <nav id="nav" class="hidden">
+      <button data-view="dashboard">Dashboard</button>
+      <button data-view="events">All Events</button>
+      <button data-view="profile">Profile</button>
+      <button data-view="admin" id="nav-admin" class="hidden">Admin</button>
+      <button id="btn-logout">Sign out</button>
+    </nav>
+  </header>
+
+  <!-- Landing / sign-in -->
+  <main id="view-landing" class="container">
+    <section class="hero card">
+      <h2>Never miss a campus event again</h2>
+      <p>Personalized event recommendations based on your interests, year, and department.</p>
+      <form id="login-form" class="login-box">
+        <input id="login-uid" placeholder="Student ID (e.g. s123)" required />
+        <input id="login-name" placeholder="Your name" />
+        <label class="checkbox"><input type="checkbox" id="login-admin" /> Sign in as admin (demo)</label>
+        <button type="submit" class="btn primary">Sign in</button>
+      </form>
+      <p class="muted small">Demo sign-in for local development. Plug Firebase Auth in production.</p>
+    </section>
+  </main>
+
+  <!-- Dashboard -->
+  <main id="view-dashboard" class="container hidden">
+    <h2 class="view-title">Recommended for you</h2>
+    <div id="recommendation-list" class="event-grid"></div>
+    <h2 class="view-title">Upcoming events</h2>
+    <div id="upcoming-list" class="event-grid"></div>
+  </main>
+
+  <!-- All events -->
+  <main id="view-events" class="container hidden">
+    <h2 class="view-title">All events</h2>
+    <form id="filter-bar" class="filters card">
+      <input id="f-q" placeholder="Search title/description…" />
+      <select id="f-category">
+        <option value="">Any category</option>
+        <option>coding</option><option>ai</option><option>sports</option>
+        <option>music</option><option>arts</option><option>entrepreneurship</option>
+        <option>volunteering</option>
+      </select>
+      <input id="f-date" type="date" />
+      <button class="btn">Apply</button>
+    </form>
+    <div id="all-events-list" class="event-grid"></div>
+  </main>
+
+  <!-- Profile -->
+  <main id="view-profile" class="container hidden">
+    <h2 class="view-title">Your profile</h2>
+    <form id="profile-form" class="card profile-box">
+      <label>Student ID <input id="p-uid" disabled /></label>
+      <label>Name <input id="p-name" required /></label>
+      <label>Department <input id="p-department" placeholder="e.g. CSE" /></label>
+      <label>Year <input id="p-year" placeholder="e.g. 2" /></label>
+      <fieldset>
+        <legend>Interests</legend>
+        <div id="interests" class="interests"></div>
+      </fieldset>
+      <button class="btn primary">Save profile</button>
+    </form>
+    <h2 class="view-title">My registrations</h2>
+    <div id="my-registrations" class="event-grid"></div>
+  </main>
+
+  <!-- Admin -->
+  <main id="view-admin" class="container hidden">
+    <h2 class="view-title">Admin — manage events</h2>
+    <form id="admin-form" class="card admin-box">
+      <label>Title <input id="a-title" required /></label>
+      <label>Description <textarea id="a-description"></textarea></label>
+      <label>Category
+        <select id="a-category">
+          <option>coding</option><option>ai</option><option>sports</option>
+          <option>music</option><option>arts</option><option>entrepreneurship</option>
+          <option>volunteering</option>
+        </select>
+      </label>
+      <label>Tags (comma-separated) <input id="a-tags" placeholder="hackathon, beginners" /></label>
+      <label>Target audience (departments/years, comma-separated) <input id="a-audience" placeholder="CSE, 2" /></label>
+      <label>Date <input id="a-date" type="date" required /></label>
+      <label>Start time <input id="a-start" type="time" /></label>
+      <label>End time <input id="a-end" type="time" /></label>
+      <label>Venue / link <input id="a-venue" /></label>
+      <label>Organizer <input id="a-organizer" /></label>
+      <label>Registration deadline <input id="a-deadline" type="date" /></label>
+      <label>Capacity <input id="a-capacity" type="number" min="1" required /></label>
+      <label>Status
+        <select id="a-status"><option>draft</option><option>published</option></select>
+      </label>
+      <button class="btn primary">Create event</button>
+    </form>
+    <h2 class="view-title">Existing events</h2>
+    <div id="admin-events" class="event-grid"></div>
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

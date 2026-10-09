@@ -1,0 +1,36 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+
+    function isSignedIn() { return request.auth != null; }
+    function isAdmin() {
+      return isSignedIn() &&
+        request.auth.token.admin == true;
+    }
+
+    // Profiles: readable/writable by owner; admins read all.
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow create, update: if request.auth.uid == uid || isAdmin();
+      // Role escalation: only admins may set isAdmin on others, and a user
+      // may never unset or grant their own admin status.
+      allow delete: if isAdmin();
+    }
+
+    // Events: everyone signed-in can read published; admins manage all.
+    match /events/{eventId} {
+      allow read: if isSignedIn() &&
+        (resource.data.status == 'published' || isAdmin());
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Registrations: readable/writable by owner only, in the app's control.
+    match /registrations/{registrationId} {
+      allow read: if isSignedIn() &&
+        (resource.data.uid == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if isSignedIn() &&
+        (resource.data.uid == request.auth.uid || isAdmin());
+    }
+  }
+}
