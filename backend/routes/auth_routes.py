@@ -1,38 +1,64 @@
-"""Auth routes: demo sign-in for dev mode."""
+"""Auth routes: student register/login/logout, admin login (spec section 10)."""
 from __future__ import annotations
 
-from flask import Blueprint, current_app, g, jsonify, request
+from flask import Blueprint, current_app, g, jsonify, request, session
 
-from auth_service import auth_required, create_demo_token
+import db
+from auth_service import (auth_required, load_session_user, login_admin,
+                          login_student, register_student)
 
 bp = Blueprint("auth", __name__)
 
 
-@bp.post("/api/auth/demo-login")
-def demo_login():
-    """Dev-mode sign-in: creates or fetches a user profile and returns a token."""
+def _start_session(uid: int) -> None:
+    session.clear()
+    session["uid"] = uid
+    session.permanent = True
+
+
+@bp.post("/api/auth/register")
+def register():
     data = request.get_json(silent=True) or {}
-    uid = (data.get("uid") or "").strip()
-    name = (data.get("name") or "").strip()
+    uid, err = register_student(data.get("email"), data.get("password"))
+    if err:
+        return jsonify(error=err), (409 if "already" in err else 400)
+    _start_session(uid)
+    user = db.query_one("SELECT id, email, role FROM users WHERE id=?", (uid,))
+    return jsonify(user=dict(user)), 201
+
+
+@bp.post("/api/auth/login")
+def login():
+    data = request.get_json(silent=True) or {}
+    email, password = data.get("email"), data.get("password")
+    if not email or not password:
+        return jsonify(error="email and password required"), 400
+
+    # Admin check first (separate credentials from students, spec section 2).
+    if login_admin(email, password):
+        admin = db.query_one(
+            "SELECT id, email, role FROM users WHERE email=? AND role='admin'",
+            ((email or "").strip().lower(),))
+        _start_session(admin["id"])
+        return jsonify(user=dict(admin))
+
+    uid = login_student(email, password)
     if not uid:
-        return jsonify(error="uid required"), 400
+        return jsonify(error="invalid email or password"), 401
+    _start_session(uid)
+    return jsonify(user=dict(db.query_one(
+        "SELECT id, email, role FROM users WHERE id=?", (uid,))))
 
-    user = current_app.store.get_user(uid)
-    if not user:
-        user = current_app.store.add_user(uid, {
-            "name": name or uid,
-            "department": data.get("department", ""),
-            "year": data.get("year", ""),
-            "interests": [],
-            "isAdmin": bool(data.get("isAdmin", False)),
-        })
-    elif name:
-        user = current_app.store.update_user(uid, {"name": name})
 
-    return jsonify(token=create_demo_token(uid), user=user)
+@bp.post("/api/auth/logout")
+def logout():
+    session.clear()
+    return jsonify(ok=True)
 
 
 @bp.get("/api/me")
-@auth_required()
 def me():
-    return jsonify(user=current_app.store.get_user(g.uid))
+    user = load_session_user()
+    if not user:
+        return jsonify(user=None), 200
+    return jsonify(user=dict(user))

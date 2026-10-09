@@ -1,89 +1,101 @@
-# Campus Event Recommendation Bot
+# Campus Event Management System
 
-Web app that recommends college events to students based on their interests,
-academic year, and department. Built per [PLAN.md](PLAN.md).
+Admins create and manage college events; students register, set preferences,
+suggest new events, and get personalized recommendations — with optional local
+AI via **Ollama (gemma3:4b)**. Plan and requirements: [PLAN.md](PLAN.md).
 
-- **Backend:** Python Flask (see [backend/](backend/))
-- **Frontend:** HTML/CSS/JS single page (see [frontend/](frontend/))
-- **Storage:** in-memory store for local dev, Firebase Firestore for production
-  ([backend/storage.py](backend/storage.py), [firestore.rules](firestore.rules))
-- **Recommendation engine:** transparent rule-based scorer
-  ([backend/services/recommender.py](backend/services/recommender.py))
+- **Backend:** Python Flask + SQLite ([backend/](backend/))
+- **Frontend:** HTML/CSS/JS single page ([frontend/](frontend/))
+- **AI:** local Ollama chat API, backend-only calls, gracefully optional
+  ([backend/services/ollama_client.py](backend/services/ollama_client.py))
+- **Auth:** session cookies + werkzeug password hashes
+  ([backend/auth_service.py](backend/auth_service.py))
 
-## Quick start (dev mode — no Firebase needed)
+## Quick start
 
 ```bash
 cd backend
 python -m venv venv
-venv/Scripts/activate          # Linux/macOS: source venv/bin/activate
+venv\Scripts\activate          # macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
 python app.py
 ```
 
-Open http://localhost:5000 — the Flask server also serves the frontend.
+Open **http://localhost:5000** — Flask serves both the API and the frontend.
 
-Sign in with any ID (e.g. `s123`). Tick **"Sign in as admin (demo)"** to
-access the admin dashboard.
+The SQLite database (`backend/campus_events.db`) is created and migrated
+automatically on first launch. Delete the file to reset all data.
 
-## Firestore mode
+## Logins
 
-1. Create a Firebase project → enable Authentication + Firestore.
-2. Get a service-account key and save it locally (never commit it).
-3. Copy [.env.example](.env.example) to `.env` and set:
+- **Admin (development only):** username `admin`, password `admin`.
+  Override via `ADMIN_USERNAME` / `ADMIN_PASSWORD` env vars before first run.
+  Hashed at rest; replace with proper provisioning in production.
+- **Students:** sign up from the landing page with any valid email and a
+  password of 6+ characters.
 
-   ```
-   DB_BACKEND=firestore
-   FIREBASE_CREDENTIALS=path/to/serviceAccountKey.json
-   FIREBASE_PROJECT_ID=your-project-id
-   ```
+## Ollama integration
 
-4. Deploy rules: `firebase deploy --only firestore:rules`
+1. Start Ollama: `ollama serve` (usually runs automatically).
+2. Verify the model is present: `ollama list` — requires `gemma3:4b`.
+   If missing: `ollama pull gemma3:4b`.
+3. Confirm from the app: `GET /api/ai/status` → `{"available": true, ...}`.
+
+Configuration (all optional, [see .env.example](.env.example)):
+
+```
+OLLAMA_HOST=http://localhost:11434
+OLLAMA_MODEL=gemma3:4b
+OLLAMA_TIMEOUT=90
+```
+
+**AI features** (each degrades gracefully — the app works fully without
+Ollama): event summaries, discovery assistant (answers grounded in real
+database records), suggestion polishing, admin description drafting,
+AI event re-ranking. The rule-based recommender always remains available.
+
+The backend never sends passwords or auth data to the model, and the AI
+can never create, publish, edit, or delete events without an authorized
+user action.
+
+## Key API groups
+
+`/api/auth/*` (register/login/logout) · `/api/profile` · `/api/events` ·
+`/api/events/:id/register` · `/api/my-registrations` ·
+`/api/event-suggestions` · `/api/admin/events` (admin) ·
+`/api/admin/suggestions` (admin) · `/api/ai/*` (optional) · `/api/health`
+
+Admin endpoints are protected server-side: student sessions get 403.
+
+## Registration logic
+
+- **Internal:** stored in SQLite; duplicates rejected (409); capacity and
+  deadline enforced server-side.
+- **External (Google Forms etc.):** tracked as `pending_external` — the app
+  does not claim completion it cannot verify.
+- **Both:** the Register button does internal registration; an additional
+  button opens the external form.
 
 ## Tests
 
 ```bash
-cd backend            # or from repo root using tests/conftest path setup
-pytest ../tests -v
+python -m pytest tests -q
 ```
 
-Covers recommendation scoring rules (PLAN §6.3), registration constraints
-(duplicates / capacity / deadline), admin authorization, and API filters.
-
-## API overview
-
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET  | `/api/health` | Liveness check |
-| POST | `/api/auth/demo-login` | Dev sign-in, returns bearer token |
-| GET  | `/api/me` | Current user (token required) |
-| GET/PUT | `/api/profile` | View / update profile |
-| PUT  | `/api/profile/interests` | Update interests |
-| GET  | `/api/events` | Published upcoming events (filters: `category`, `date`, `department`, `q`) |
-| GET  | `/api/events/<id>` | Event details |
-| GET  | `/api/recommendations` | Personalized ranked events |
-| POST | `/api/events/<id>/register` | Register (dedupe, capacity, deadline enforced) |
-| POST | `/api/events/<id>/cancel-registration` | Cancel registration |
-| GET  | `/api/my-registrations` | My registrations |
-| POST/GET | `/api/admin/events` | Admin: create / list all events |
-| PUT  | `/api/admin/events/<id>` | Admin: update event |
-| POST | `/api/admin/events/<id>/cancel` | Admin: cancel event |
-
-## Scoring rules
-
-From [PLAN.md](PLAN.md) §6.3 (weights tunable in `.env`/`config.py`):
-
-- Category match: **+3** · each matched tag **+2**
-- Department/year in targetAudience: **+1** · registration open **+1**
-- Past, cancelled, and draft events are excluded
-- Sorted by match score DESC, then date ASC
+32 tests covering the acceptance scenarios: admin login, student
+register/re-login, profile persistence, admin CRUD + publish lifecycle,
+duplicate/capacity/deadline registration rules, suggestion flow, role
+restrictions, recommendations by preference, and app functionality with
+Ollama stopped.
 
 ## Project structure
 
 ```
-backend/    Flask app, routes, services, config
-frontend/   index.html, css/, js/
-tests/      pytest: recommender + API integration
-firestore.rules
-.env.example
-PLAN.md / TODO.md
+backend/   app.py, db.py (SQLite), auth_service.py, helpers.py, config.py
+           routes/  auth_routes, events, registrations, profile,
+                    recommendations, suggestions, admin, ai
+           services/  ollama_client.py, recommender.py
+           uploads/   posters and profile photos (created at runtime)
+frontend/  index.html, css/style.css, js/app.js
+tests/     pytest suite
 ```

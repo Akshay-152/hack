@@ -1,81 +1,90 @@
-"""Authentication helpers.
+"""Session-cookie authentication.
 
-In dev (memory) mode a simple signed demo-token scheme is used so the
-app runs without external services. With Firebase configured, ID
-tokens issued by Firebase Auth are verified with firebase_admin.
+Students: email + password (werkzeug hash) stored in `users`.
+Admin: development credentials from config (default admin/admin) as a
+`users` row with role='admin', seeded at first boot — dev only, never
+plain-text storage, replace ADMIN_* env vars in production.
 """
 from __future__ import annotations
 
 import functools
-import hmac
-import time
+import os
 
-from flask import current_app, g, jsonify, request
+from flask import current_app, g, jsonify, request, session
+from werkzeug.security import check_password_hash, generate_password_hash
 
-DEMO_KEY = "campus-bot-demo"  # '%(demo)s' token signature key (dev only)
+import db
 
-MAX_SKEW = 5 * 60  # seconds
-
-
-def _sign(payload: str) -> str:
-    key = (current_app.config["SECRET_KEY"] + DEMO_KEY).encode()
-    return hmac.new(key, payload.encode(), "sha256").hexdigest()
+EMAIL_RE = __import__("re").compile(
+    r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 
-def create_demo_token(uid: str) -> str:
-    """Create a dev-only token '%(uid)s:%(ts)s:%(sig)s' (memory backend)."""
-    issued = str(int(time.time()))
-    payload = f"{uid}:{issued}"
-    return f"{payload}:{_sign(payload)}"
+def seed_admin() -> None:
+    """Ensure the config-admin exists (dev credentials, hash stored)."""
+    username = os.getenv("ADMIN_USERNAME",
+                         current_app.config.get("ADMIN_USERNAME", "admin")
+                         if current_app else "admin")
+    password = os.getenv("ADMIN_PASSWORD",
+                         current_app.config.get("ADMIN_PASSWORD", "admin")
+                         if current_app else "admin")
+    row = db.query_one("SELECT id FROM users WHERE email = ?", (username,))
+    if not row:
+        db.execute(
+            "INSERT INTO users (email, password_hash, role, created_at) "
+            "VALUES (?,?,?,?)",
+            (username, generate_password_hash(password), "admin", db.now_iso()))
 
 
-def verify_token(token: str) -> str | None:
-    """Return the uid for a valid token, else None."""
-    if not token:
+def login_admin(username: str, password: str) -> bool:
+    row = db.query_one(
+        "SELECT * FROM users WHERE email = ? AND role = 'admin'", (username,))
+    return bool(row and check_password_hash(row["password_hash"], password))
+
+
+def register_student(email: str, password: str) -> tuple[int | None, str]:
+    """Returns (user_id, error). Hashes the password; blocks duplicates."""
+    email = (email or "").strip().lower()
+    if not EMAIL_RE.match(email):
+        return None, "invalid email address"
+    if len(password or "") < 6:
+        return None, "password must be at least 6 characters"
+    if db.query_one("SELECT id FROM users WHERE email = ?", (email,)):
+        return None, "email already registered"
+    uid = db.execute(
+        "INSERT INTO users (email, password_hash, role, created_at) "
+        "VALUES (?,?, 'student', ?)",
+        (email, generate_password_hash(password), db.now_iso()))
+    db.execute("INSERT INTO student_profiles (user_id) VALUES (?)", (uid,))
+    return uid, ""
+
+
+def login_student(email: str, password: str) -> int | None:
+    row = db.query_one(
+        "SELECT * FROM users WHERE email = ? AND role = 'student'",
+        ((email or "").strip().lower(),))
+    return row["id"] if row and check_password_hash(row["password_hash"],
+                                                    password or "") else None
+
+
+def load_session_user():
+    uid = session.get("uid")
+    if not uid:
         return None
-    parts = token.split(":")
-    if len(parts) != 3:
-        return None
-    uid, issued, sig = parts
-    payload = f"{uid}:{issued}"
-    if not hmac.compare_digest(_sign(payload), sig):
-        return None
-    try:
-        issued_at = int(issued)
-    except ValueError:
-        return None
-    if abs(time.time() - issued_at) > 365 * 24 * 3600:
-        return None  # very old token; dev tokens are long-lived but not forever
-    return uid
-
-
-def firebase_verify(firebase_token: str) -> str | None:
-    """Verify a Firebase ID token when firebase-admin is configured."""
-    try:
-        from firebase_admin import auth as fb_auth
-        decoded = fb_auth.verify_id_token(firebase_token)
-        return decoded.get("uid")
-    except Exception:
-        return None
+    return db.query_one(
+        "SELECT id, email, role FROM users WHERE id = ?", (uid,))
 
 
 def auth_required(require_admin: bool = False):
-    """Decorator: attach g.uid; optionally enforce admin role."""
+    """Attach g.user (sqlite Row) or return 401/403 JSON."""
     def decorator(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            header = request.headers.get("Authorization", "")
-            token = header[7:].strip() if header.startswith("Bearer ") else ""
-            if require_admin:
-                uid = verify_token(token) or firebase_verify(token)
-                user = current_app.store.get_user(uid) if uid else None
-                if not uid or not user or not user.get("isAdmin"):
-                    return jsonify(error="admin access required"), 403
-            else:
-                uid = verify_token(token)
-                if not uid:
-                    return jsonify(error="authentication required"), 401
-            g.uid = uid
+            user = load_session_user()
+            if not user:
+                return jsonify(error="login required"), 401
+            if require_admin and user["role"] != "admin":
+                return jsonify(error="admin access required"), 403
+            g.user = user
             return fn(*args, **kwargs)
         return wrapper
     return decorator

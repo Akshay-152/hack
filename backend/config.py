@@ -25,3 +25,11 @@ class Config:
     WEIGHT_TAG_MATCH = 2
     WEIGHT_AUDIENCE_RELEVANCE = 1
     WEIGHT_REGISTRATION_OPEN = 1
+
+    # Ollama (local AI). App is fully functional when Ollama is stopped.
+    OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")
+
+    # Dev-only admin credentials — replace for production; never plain text.
+    ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+    ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin")

@@ -1,57 +1,55 @@
-"""Public event endpoints (PLAN API section 9)."""
+"""Public event endpoints (spec section 5 dashboard data)."""
 from __future__ import annotations
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, jsonify, request
+
+from auth_service import load_session_user
+import db
+from helpers import event_to_dict, registration_open
 
 bp = Blueprint("events", __name__)
 
 
-def _filter_events(events: list[dict], args) -> list[dict]:
-    """Apply category, date, department, and keyword filters."""
-    category = (args.get("category") or "").strip().lower()
-    date = (args.get("date") or "").strip()
-    department = (args.get("department") or "").strip().lower()
-    q = (args.get("q") or "").strip().lower()
-
-    out = []
-    for e in events:
-        if category and e.get("category", "").lower() != category:
-            continue
-        if date and e.get("date") != date:
-            continue
-        if department:
-            audience = [a.lower() for a in e.get("targetAudience", [])]
-            if department not in audience:
-                continue
-        if q and q not in (e.get("title", "") + e.get("description", "")).lower():
-            continue
-        out.append(e)
-    return out
-
-
-def _serialize(e: dict, now_iso: str) -> dict:
-    data = dict(e)
-    reg_open = (
-        e.get("registeredCount", 0) < e.get("capacity", 0)
-        and (not e.get("registrationDeadline") or e["registrationDeadline"] > now_iso)
-    )
-    data["registrationOpen"] = reg_open
-    return data
-
-
 @bp.get("/api/events")
 def list_events():
-    from storage import utcnow
-    now = utcnow().isoformat()
-    published = [e for e in current_app.store.list_events()
-                 if e.get("status") == "published" and e.get("date", "") >= now[:10]]
-    return jsonify(events=_filter_events(published, request.args))
+    """Published, non-past events; filters: category, q, date."""
+    rows = db.query(
+        "SELECT * FROM events WHERE status='published' "
+        "ORDER BY event_date, start_time")
+    now_date = db.now_iso()[:10]
+    out = []
+    for row in rows:
+        e = event_to_dict(row)
+        if e["event_date"] < now_date:
+            continue
+        cat = (request.args.get("category") or "").strip().lower()
+        if cat and e["category"].lower() != cat:
+            continue
+        q = (request.args.get("q") or "").strip().lower()
+        if q and q not in (e["title"] + " " + e["description"] + " " +
+                           e["category"] + " " + ",".join(e["tags"])).lower():
+            continue
+        date_f = (request.args.get("date") or "").strip()
+        if date_f and e["event_date"] != date_f:
+            continue
+        e["registrationOpen"] = registration_open(e)
+        out.append(e)
+    return jsonify(events=out)
 
 
-@bp.get("/api/events/<event_id>")
+@bp.get("/api/events/<int:event_id>")
 def get_event(event_id):
-    from storage import utcnow
-    event = current_app.store.get_event(event_id)
-    if not event or event.get("status") != "published":
+    row = db.query_one(
+        "SELECT * FROM events WHERE id=? AND status='published'", (event_id,))
+    if not row:
         return jsonify(error="event not found"), 404
-    return jsonify(event=_serialize(event, utcnow().isoformat()))
+    e = event_to_dict(row)
+    e["registrationOpen"] = registration_open(e)
+    user = load_session_user()
+    if user:
+        reg = db.query_one(
+            "SELECT registration_status FROM event_registrations "
+            "WHERE event_id=? AND student_user_id=?",
+            (event_id, user["id"]))
+        e["myRegistration"] = dict(reg) if reg else None
+    return jsonify(event=e)

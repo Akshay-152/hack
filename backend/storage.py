@@ -24,7 +24,7 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-class MemoryStore:
+class MemoryStore:  # KEPT for reference/legacy tests; app now uses SQLite (db.py)
     """Simple in-memory implementation with Firestore-like document dicts."""
 
     def __init__(self) -> None:

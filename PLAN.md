@@ -1,4 +1,7 @@
-# Campus Event Recommendation Bot --- Project Plan
+# Campus Event Management System --- Project Plan
+
+> **REWORKED 2026-10-09** — see "Implementation Plan (Ollama edition)" at the bottom
+> for the current build. Sections 1-14 below are the original concept document.
 
 ## 1. Project Overview
 
@@ -351,3 +354,45 @@ campus-event-recommendation-bot/
 
 Keep real credentials in a local `.env` file or an appropriate secret
 manager. Commit `.env.example`, not `.env`.
+
+---
+
+# Implementation Plan (Ollama edition) — CURRENT BUILD
+
+Rework the existing Flask + vanilla JS app in place. Preserve design and
+existing recommendation logic; replace storage/auth and add new features.
+
+## Current state
+- Flask backend, vanilla JS frontend, memory/Firestore storage, demo-token auth.
+- Keep: routes structure, recommender scoring rules, frontend design.
+- Replace: storage → SQLite (spec §9 schema), auth → sessions + password hashes.
+- Add: admin CRUD + poster upload, event suggestions, Ollama (gemma3:4b) service.
+
+## Sequence
+1. `db.py` — SQLite schema: users, student_profiles, events,
+   event_registrations, event_suggestions (FKs, unique constraints, indexes,
+   auto-migrate/init at startup).
+2. `auth_service.py` — session cookie auth. Student register/login (email+pass,
+   werkzeug hash, duplicate-email check). Admin: dev credentials admin/admin
+   (configurable via env, hash stored, dev-only). Server-side role guards.
+3. `routes/admin.py` — full CRUD + poster upload (png/jpg/webp, ≤5MB, into
+   `backend/uploads/`), delete with registration handling, status lifecycle,
+   validation. Suggestions review: approve/reject, create-event-from-suggestion.
+4. `routes/events.py` — published events + filters/search. `registrations.py` —
+   internal (DB, dedup/capacity/deadline) vs external URL tracking (pending).
+5. `routes/suggestions.py` — student submit; list own; admin review.
+6. `services/ollama_client.py` — backend-only calls to localhost:11434,
+   model gemma3:4b, configurable, timeouts, graceful failure. Endpoints:
+   recommendations (with rule-based fallback), event summary,
+   discovery assistant (RAG over real events), suggestion polishing,
+   admin description drafting.
+7. Frontend rework (same design): profile fields per spec, admin CRUD +
+   suggestions review, event cards with poster + register button, suggestion
+   form, AI bits as progressive enhancement.
+8. Tests against SQLite; verify every scenario in spec §12; README update.
+
+## Rules
+- Admin cannot be created via student signup; students can never hit /api/admin/*.
+- Never log or send passwords to Ollama; AI never mutates data.
+- Keep app fully functional when Ollama is stopped.
+- No fake events, no dead buttons, no extra dashboards.

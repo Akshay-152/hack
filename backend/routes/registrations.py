@@ -1,76 +1,101 @@
-"""Registration endpoints (PLAN API section 9) with server-side rules:
-duplicate prevention, capacity, and registration deadlines."""
+"""Registration endpoints (spec section 5).
+
+Internal registration: validated + stored here (dedup by unique index,
+capacity and deadline enforced server-side). External: stored as
+pending_external — completion of a Google Form etc. can't be verified.
+"""
 from __future__ import annotations
 
-import json
-import pathlib  # noqa: F401  (placeholder to keep module importable standalone)
-
-from flask import Blueprint, current_app, g, jsonify
+from flask import Blueprint, g, jsonify
 
 from auth_service import auth_required
+import db
+from helpers import event_to_dict, registration_open
 
 bp = Blueprint("registrations", __name__)
 
 
-def _event_registrable(event: dict | None) -> tuple[dict | None, str | None]:
-    """Validate that registration can proceed; returns (event, error)."""
-    if not event or event.get("status") != "published":
-        return None, "event not found"
-
-    from storage import utcnow
-    now = utcnow()
-
-    from services.recommender import event_is_past
-    if event_is_past(event, now):
-        return None, "event already ended"
-
-    deadline = event.get("registrationDeadline")
-    if deadline:
-        try:
-            from datetime import datetime
-            if datetime.fromisoformat(deadline) < now:
-                return None, "registration deadline passed"
-        except ValueError:
-            pass
-
-    if event.get("registeredCount", 0) >= event.get("capacity", 0):
-        return None, "event is full"
-    return event, None
-
-
-@bp.post("/api/events/<event_id>/register")
+@bp.post("/api/events/<int:event_id>/register")
 @auth_required()
 def register(event_id):
-    existing = current_app.store.get_registration(g.uid, event_id)
-    if existing:
+    if g.user["role"] != "student":
+        return jsonify(error="admin accounts cannot register for events"), 403
+
+    row = db.query_one("SELECT * FROM events WHERE id=?", (event_id,))
+    if not row:
+        return jsonify(error="event not found"), 404
+    e = event_to_dict(row)
+
+    if e["status"] == "cancelled":
+        return jsonify(error="this event has been cancelled"), 400
+    if e["status"] != "published":
+        return jsonify(error="event is not open for registration"), 400
+    if row["event_date"] < db.now_iso()[:10]:
+        return jsonify(error="event already ended"), 400
+
+    dup = db.query_one(
+        "SELECT id FROM event_registrations "
+        "WHERE event_id=? AND student_user_id=?",
+        (event_id, g.user["id"]),)
+    if dup:
         return jsonify(error="already registered for this event"), 409
 
-    event = current_app.store.get_event(event_id)
-    event, err = _event_registrable(event)
-    if err:
-        status = 404 if err == "event not found" else 400
-        return jsonify(error=err), status
+    if not registration_open(e):
+        return jsonify(error="registration is closed "
+                             "(event full or deadline passed)"), 400
 
-    reg = current_app.store.add_registration(g.uid, event_id)
-    return jsonify(registration=reg), 201
+    method = "external" if e["registration_type"] == "external" else "internal"
+    status = "pending_external" if method == "external" else "registered"
+
+    try:
+        db.execute(
+            "INSERT INTO event_registrations "
+            "(event_id, student_user_id, registration_status, registered_at) "
+            "VALUES (?,?,?,?)",
+            (event_id, g.user["id"], status, db.now_iso()))
+    except Exception:
+        return jsonify(error="already registered for this event"), 409
+
+    message = {
+        "internal": "Registration successful 🎉",
+        "external": "External registration: your spot is tracked as pending "
+                    "until you complete the form.",
+    }[method]
+    return jsonify(registration={"eventId": event_id, "method": method,
+                                 "status": status, "message": message}), 201
 
 
-@bp.post("/api/events/<event_id>/cancel-registration")
+@bp.post("/api/events/<int:event_id>/cancel-registration")
 @auth_required()
 def cancel(event_id):
-    reg = current_app.store.cancel_registration(g.uid, event_id)
-    if not reg:
+    row = db.query_one(
+        "SELECT id FROM event_registrations "
+        "WHERE event_id=? AND student_user_id=?",
+        (event_id, g.user["id"]))
+    if not row:
         return jsonify(error="no registration found"), 404
-    return jsonify(registration=reg)
+    db.execute("DELETE FROM event_registrations WHERE id=?", (row["id"],))
+    return jsonify(ok=True)
 
 
 @bp.get("/api/my-registrations")
 @auth_required()
 def my_registrations():
-    regs = current_app.store.list_registrations_for_user(g.uid)
-    events = []
-    for r in regs:
-        event = current_app.store.get_event(r["eventId"])
-        if event:
-            events.append({"registration": r, "event": event})
-    return jsonify(registrations=events)
+    rows = db.query(
+        "SELECT r.id AS reg_id, r.registration_status, r.registered_at, "
+        "e.id AS eid, e.title, e.description, e.category, e.poster_path, "
+        "e.event_date, e.start_time, e.end_time, e.venue, e.organizer, "
+        "e.registration_deadline, e.capacity, e.registration_type, "
+        "e.registration_url, e.registration_instructions, e.tags, e.status "
+        "FROM event_registrations r JOIN events e ON e.id = r.event_id "
+        "WHERE r.student_user_id=? ORDER BY r.registered_at DESC",
+        (g.user["id"],))
+    out = []
+    for row in rows:
+        r = dict(row)
+        reg = {"id": r.pop("reg_id"),
+               "status": r.pop("registration_status"),
+               "registeredAt": r.pop("registered_at")}
+        r["id"] = r.pop("eid")
+        out.append({"registration": reg, "event": event_to_dict(r)})
+    return jsonify(registrations=out)
